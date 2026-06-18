@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Examly AI Automation</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      width: 360px;
+      min-height: 440px;
+      background: #0a0a14;
+      color: #dde1ec;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 13px;
+    }
+
+    /* ── Header ── */
+    .header {
+      background: linear-gradient(135deg, #13132b 0%, #0d1b38 100%);
+      padding: 16px 18px 12px;
+      border-bottom: 1px solid #1e3a5f;
+      text-align: center;
+      position: relative;
+    }
+    .logo { font-size: 22px; font-weight: 900; letter-spacing: 1px; }
+    .logo .accent { color: #00ff88; }
+    .version {
+      font-size: 9px; font-weight: 600; color: #3d7aff;
+      position: absolute; top: 10px; right: 12px;
+      background: #0d1b38; border: 1px solid #1e3a5f;
+      padding: 2px 7px; border-radius: 20px;
+    }
+    .tagline { font-size: 11px; color: #546070; margin-top: 3px; }
+
+    /* ── Section ── */
+    .section {
+      padding: 13px 16px;
+      border-bottom: 1px solid #111126;
+    }
+    .section-title {
+      font-size: 10px; font-weight: 800; text-transform: uppercase;
+      letter-spacing: 1px; color: #3d5870; margin-bottom: 10px;
+    }
+
+    /* ── Toggle grid ── */
+    .toggle-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr 1fr;
+      gap: 7px;
+      margin-bottom: 8px;
+    }
+    .toggle-btn {
+      display: flex; flex-direction: column; align-items: center; gap: 4px;
+      padding: 9px 4px;
+      border: 2px solid #1e2038; border-radius: 10px;
+      background: #111126; color: #4a5a6a;
+      cursor: pointer; transition: all 0.18s;
+      font-size: 10px; font-weight: 700;
+    }
+    .toggle-btn .icon { font-size: 18px; line-height: 1; }
+    .toggle-btn:hover { border-color: #2a3a5a; color: #aaa; }
+
+    .toggle-btn.active-video  { border-color: #00c851; background: #081810; color: #00c851; box-shadow: 0 0 10px rgba(0,200,81,0.25); }
+    .toggle-btn.active-mcq    { border-color: #ff6b35; background: #1e0e08; color: #ff6b35; box-shadow: 0 0 10px rgba(255,107,53,0.25); }
+    .toggle-btn.active-coding { border-color: #6c63ff; background: #100a20; color: #6c63ff; box-shadow: 0 0 10px rgba(108,99,255,0.25); }
+    .toggle-btn.active-all    { border-color: #00d4ff; background: #061520; color: #00d4ff; box-shadow: 0 0 10px rgba(0,212,255,0.25); }
+
+    /* ── Summary pill ── */
+    .summary {
+      text-align: center; padding: 6px 10px; border-radius: 20px;
+      font-size: 11px; font-weight: 600;
+    }
+    .summary.none   { background: #1a1a08; color: #a08000; border: 1px solid #3a3000; }
+    .summary.active { background: #061810; color: #00c851; border: 1px solid #00401a; }
+
+    /* ── Buttons ── */
+    .btn {
+      width: 100%; padding: 11px; border: none; border-radius: 8px;
+      font-weight: 700; font-size: 13px; cursor: pointer;
+      transition: all 0.18s; margin-bottom: 8px;
+    }
+    .btn:last-child { margin-bottom: 0; }
+    .btn-primary {
+      background: linear-gradient(135deg, #00c851, #008f38);
+      color: #001408; letter-spacing: 0.5px;
+    }
+    .btn-primary:hover    { filter: brightness(1.12); transform: translateY(-1px); }
+    .btn-primary:active   { transform: translateY(0); }
+    .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+    .btn-secondary {
+      background: #111126; color: #546070; border: 1px solid #1e2038;
+    }
+    .btn-secondary:hover { background: #191932; color: #9aaabb; }
+
+    /* ── Provider tabs ── */
+    .provider-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+    .provider-tab {
+      flex: 1; padding: 7px 4px;
+      border: 2px solid #1e2038; border-radius: 8px;
+      background: #111126; color: #4a5a6a;
+      font-size: 11px; font-weight: 700; cursor: pointer;
+      text-align: center; transition: all 0.18s;
+    }
+    .provider-tab:hover { border-color: #2a3a5a; color: #aaa; }
+    .provider-tab.active-gemini {
+      border-color: #3d7aff; background: #060f28; color: #5a9aff;
+      box-shadow: 0 0 8px rgba(61,122,255,0.2);
+    }
+    .provider-tab.active-openrouter {
+      border-color: #a855f7; background: #120820; color: #c084fc;
+      box-shadow: 0 0 8px rgba(168,85,247,0.2);
+    }
+
+    /* ── API key inputs ── */
+    .input-group { display: flex; gap: 6px; margin-bottom: 6px; }
+    .input-group input {
+      flex: 1; padding: 8px 10px;
+      background: #060610; border: 1px solid #1e2038;
+      border-radius: 6px; color: #dde1ec; font-size: 12px;
+    }
+    .input-group input:focus { outline: none; border-color: #00c851; }
+    .input-group .btn-save {
+      padding: 8px 14px; background: #00c851;
+      color: #001408; border: none; border-radius: 6px;
+      font-weight: 700; font-size: 12px; cursor: pointer; white-space: nowrap;
+    }
+    .input-group .btn-save:hover { background: #00a040; }
+
+    .model-row { display: none; gap: 6px; margin-bottom: 6px; align-items: center; }
+    .model-row.visible { display: flex; }
+    .model-row label { font-size: 10px; color: #3d5870; white-space: nowrap; }
+    .model-row input {
+      flex: 1; padding: 6px 8px; background: #060610;
+      border: 1px solid #1e2038; border-radius: 6px;
+      color: #dde1ec; font-size: 11px;
+    }
+    .model-row input:focus { outline: none; border-color: #a855f7; }
+
+    .key-hint { font-size: 10px; color: #3a4a5a; }
+    .key-hint a { color: #3d7aff; text-decoration: none; }
+    .key-hint a:hover { text-decoration: underline; }
+
+    .key-badge {
+      display: inline-block; padding: 2px 8px;
+      border-radius: 10px; font-size: 9px; font-weight: 700;
+      background: #061810; color: #00c851; border: 1px solid #00c851;
+      margin-left: 6px; vertical-align: middle;
+    }
+
+    /* ── Status bar ── */
+    .status-bar {
+      padding: 10px 16px; background: #060610;
+      border-top: 1px solid #111126;
+      display: flex; align-items: center; gap: 8px; min-height: 38px;
+    }
+    .status-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #1e2038; flex-shrink: 0; transition: background 0.3s;
+    }
+    .status-dot.ready   { background: #00c851; box-shadow: 0 0 6px #00c851; }
+    .status-dot.working { background: #ff9f35; box-shadow: 0 0 6px #ff9f35; animation: pulse 1s infinite; }
+    .status-dot.error   { background: #ff4444; box-shadow: 0 0 6px #ff444488; }
+
+    #status-text { font-size: 11px; color: #6a7a8a; flex: 1; word-break: break-word; }
+
+    @keyframes pulse {
+      0%,100% { opacity: 1; } 50% { opacity: 0.35; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <div class="header">
+    <div class="version">v3.0.0</div>
+    <div class="logo">Examly <span class="accent">AI</span></div>
+    <div class="tagline">Full-auto: Videos · MCQs · Coding Tests</div>
+  </div>
+
+  <!-- Mode selector -->
+  <div class="section">
+    <div class="section-title">🎯 Select what to automate</div>
+    <div class="toggle-grid">
+      <button class="toggle-btn" id="btn-all"    data-type="all">
+        <span class="icon">⚡</span><span>Full Auto</span>
+      </button>
+      <button class="toggle-btn" id="btn-video"  data-type="video">
+        <span class="icon">▶️</span><span>Video</span>
+      </button>
+      <button class="toggle-btn" id="btn-mcq"    data-type="mcq">
+        <span class="icon">📝</span><span>MCQ</span>
+      </button>
+      <button class="toggle-btn" id="btn-coding" data-type="coding">
+        <span class="icon">💻</span><span>Coding</span>
+      </button>
+    </div>
+    <div class="summary none" id="mode-summary">⚠️ Select at least one option</div>
+  </div>
+
+  <!-- Actions -->
+  <div class="section">
+    <div class="section-title">⚡ Actions</div>
+    <button class="btn btn-primary" id="start-btn">▶ Start Automation</button>
+    <button class="btn btn-secondary" id="inspect-btn">🔍 Inspect Page (copy HTML)</button>
+  </div>
+
+  <!-- API Key -->
+  <div class="section">
+    <div class="section-title">
+      🔑 AI Provider &amp; API Key
+      <span class="key-badge" id="key-badge" style="display:none">✓ Saved</span>
+    </div>
+
+    <div class="provider-tabs">
+      <div class="provider-tab active-gemini" id="tab-gemini" data-provider="gemini">🔷 Gemini</div>
+      <div class="provider-tab" id="tab-openrouter" data-provider="openrouter">🟣 OpenRouter</div>
+    </div>
+
+    <!-- Gemini panel -->
+    <div id="panel-gemini">
+      <div class="input-group">
+        <input type="password" id="gemini-key-input" placeholder="Paste your Gemini API key" autocomplete="off" />
+        <button class="btn-save" id="save-key-btn">Save</button>
+      </div>
+      <div class="key-hint">
+        Free key at <a href="https://aistudio.google.com/app/apikey" target="_blank">aistudio.google.com</a>
+      </div>
+    </div>
+
+    <!-- OpenRouter panel -->
+    <div id="panel-openrouter" style="display:none">
+      <div class="input-group">
+        <input type="password" id="openrouter-key-input" placeholder="Paste your OpenRouter API key" autocomplete="off" />
+        <button class="btn-save" id="save-or-key-btn">Save</button>
+      </div>
+      <div class="model-row visible" id="model-row">
+        <label>Model:</label>
+        <input type="text" id="openrouter-model-input" placeholder="e.g. openai/gpt-4o-mini" />
+      </div>
+      <div class="key-hint">
+        Key at <a href="https://openrouter.ai/keys" target="_blank">openrouter.ai/keys</a>
+        · Models at <a href="https://openrouter.ai/models" target="_blank">openrouter.ai/models</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Status -->
+  <div class="status-bar">
+    <div class="status-dot ready" id="status-dot"></div>
+    <span id="status-text">Ready</span>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

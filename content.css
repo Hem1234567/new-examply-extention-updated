@@ -1,0 +1,23 @@
+/* Examly AI Automation – injected page styles */
+
+/* Toast notification (created by content.js) */
+#examly-ai-toast {
+  position: fixed !important;
+  bottom: 24px !important;
+  right: 24px !important;
+  z-index: 2147483647 !important;
+  background: #0f0f1a !important;
+  color: #00ff88 !important;
+  border: 1.5px solid #00ff88 !important;
+  border-radius: 12px !important;
+  padding: 12px 18px !important;
+  font-family: 'Consolas', 'Courier New', monospace !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  line-height: 1.4 !important;
+  box-shadow: 0 6px 24px rgba(0, 255, 136, 0.25) !important;
+  max-width: 360px !important;
+  word-wrap: break-word !important;
+  pointer-events: none !important;
+  transition: opacity 0.4s ease !important;
+}
