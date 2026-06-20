@@ -86,7 +86,7 @@ async function callGemini(apiKey, prompt) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.05, maxOutputTokens: 4096, topP: 0.8 }
+      generationConfig: { temperature: 0.0, maxOutputTokens: 8192, topP: 1.0 }
     })
   });
 
@@ -141,44 +141,100 @@ async function callOpenRouter(apiKey, model, question, language, testCases, prev
 function buildCodePrompt(question, language, testCases, previousCode, previousError) {
   const lang = normaliseLang(language);
 
-  let prompt =
-`You are an expert competitive programmer. Solve the problem below in ${lang}.
-
-OUTPUT RULES (STRICTLY FOLLOW):
-- Output ONLY the raw source code. No explanations. No markdown. No backtick fences.
-- The code must read from standard input (stdin) and write to standard output (stdout).
-- Do NOT include any comments.
-- The code must be complete and compilable as-is.
-- For Java: the class name MUST be "Main" with a public static void main(String[] args) method.
-- For Python: use input() for reading; print() for output.
-- For C/C++: include all required headers; use int main().
-
-PROBLEM:
-${question.trim()}`;
-
+  // ── Step 1: structured sample cases block ──────────────────────────────────
+  let samplesBlock = '';
   if (testCases && testCases.length > 0) {
-    prompt += '\n\nSAMPLE TEST CASES:\n';
+    samplesBlock += '\n\n=== SAMPLE TEST CASES ===\n';
     testCases.forEach((tc, i) => {
-      prompt += `\n--- Case ${i + 1} ---\nInput:\n${tc.input}\nExpected Output:\n${tc.output}\n`;
+      samplesBlock += `\nSample ${i + 1}:\nInput:\n${tc.input.trim()}\nExpected Output:\n${tc.output.trim()}\n`;
     });
-    prompt += '\nMake sure your solution produces exactly the expected output for every sample case.';
+    samplesBlock += '\n=========================\n';
   }
+
+  // ── Step 2: language-specific rules ───────────────────────────────────────
+  const langRules = {
+    'Java': [
+      'Class name MUST be exactly "Main" (public class Main).',
+      'Entry point MUST be: public static void main(String[] args).',
+      'Use Scanner or BufferedReader for stdin. Use System.out.print/println for stdout.',
+      'Import all required packages (java.util.*, java.io.*, etc.).',
+      'Do NOT use package declarations.',
+    ],
+    'Python 3': [
+      'Use input() to read each line from stdin.',
+      'Use print() for stdout. print() adds a newline automatically — do NOT add extra \\n.',
+      'If multiple values on one line: map(int, input().split()) or input().split().',
+      'Handle ALL lines of input that the problem specifies.',
+    ],
+    'C++': [
+      'Include all required headers: #include <bits/stdc++.h> or specific ones.',
+      'Entry point: int main() { ... return 0; }',
+      'Use cin for stdin, cout for stdout.',
+      'Do NOT use "using namespace std;" unless needed — or add it safely.',
+    ],
+    'C': [
+      'Include all required headers: #include <stdio.h>, <stdlib.h>, <string.h> as needed.',
+      'Entry point: int main() { ... return 0; }',
+      'Use scanf/printf for I/O.',
+    ],
+    'JavaScript (Node.js)': [
+      'Read all input at once: const lines = require("fs").readFileSync("/dev/stdin","utf8").trim().split("\\n");',
+      'Use process.stdout.write() or console.log() for output.',
+      'console.log() adds a newline — do NOT double-add \\n at end.',
+    ],
+  };
+
+  const specificRules = (langRules[lang] || [
+    `Write complete, compilable ${lang} code.`,
+    'Read from stdin, write to stdout.',
+  ]).map((r, i) => `  ${i + 1}. ${r}`).join('\n');
+
+  // ── Step 3: compose the full prompt ───────────────────────────────────────
+  let prompt =
+`You are a world-class competitive programmer. Your task is to write a PERFECT solution in ${lang} that passes ALL test cases on the FIRST attempt.
+
+=== PROBLEM ===
+${question.trim()}
+===============${samplesBlock}
+=== STRICT OUTPUT RULES ===
+1. Output ONLY the raw source code — zero markdown, zero backtick fences, zero explanations.
+2. Do NOT include any code comments.
+3. The code must be 100% complete and immediately compilable/runnable with no modifications.
+4. Read from standard input (stdin). Write to standard output (stdout).
+${specificRules}
+
+=== CRITICAL CORRECTNESS RULES ===
+Before writing a single line of code, carefully:
+  a) Identify the EXACT input format: how many lines, what values per line, what separators.
+  b) Identify the EXACT output format: spacing, newlines, case sensitivity, trailing characters.
+  c) Mentally trace your solution on EVERY sample test case listed above and verify output matches exactly — character by character.
+  d) Consider ALL edge cases: empty input, single element, n=0, n=1, negative numbers, very large numbers (use long/int64 if needed), duplicate values, already sorted input, all same values.
+  e) If the output is a single value per test case, do NOT add extra newlines or spaces.
+  f) Watch for: off-by-one errors, integer overflow (use long/long long for large n), wrong loop bounds, missed edge cases.
+
+=== OUTPUT FORMAT MATCHING ===
+- Match the expected output EXACTLY — same whitespace, same case, same newline placement.
+- If expected output has a trailing newline, include it. If not, don't add one.
+- Numbers: print integers as integers (not 1.0 for 1). Floats: match decimal places shown.
+
+Now output ONLY the complete, correct ${lang} source code:`;
 
   if (previousCode && previousError) {
     prompt += `
 
+
 =============================================
-PREVIOUS ATTEMPT FAILED — FIX IT:
-The following ${lang} code was submitted but produced an error.
-You MUST fix every issue so it compiles and runs correctly.
+YOUR PREVIOUS ATTEMPT FAILED — YOU MUST FIX IT:
+The following ${lang} code was submitted but produced an error or wrong answer.
+Analyze the error carefully, identify the root cause, and output a completely corrected solution.
 
 BROKEN CODE:
 ${previousCode}
 
-COMPILER / RUNTIME ERROR:
+COMPILER / RUNTIME / WRONG ANSWER ERROR:
 ${previousError}
 
-Output ONLY the corrected source code. Nothing else.
+Fix ALL issues. Output ONLY the corrected source code. Nothing else.
 =============================================`;
   }
 

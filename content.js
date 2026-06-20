@@ -795,7 +795,7 @@ async function navigateToNextCodingQuestion(submitBtn) {
 // =================================================================
 //  SOLVE A SINGLE CODING QUESTION  (with AI retry loop)
 // =================================================================
-const MAX_CODE_RETRIES = 5;
+const MAX_CODE_RETRIES = 1; // Single attempt — prompt is built to be correct first time
 
 // Selectors for the output/result panel (checked in priority order)
 const OUTPUT_SELECTORS = [
@@ -827,126 +827,135 @@ function getOutputPanelText() {
 }
 
 async function solveCodingQuestion(leftPane, submitBtn) {
-  const question  = leftPane ? leftPane.innerText.substring(0, 3000).trim() : readQuestionText();
-  const testCases = readTestCases();
-  const language  = detectLanguage();
+  // ── Wait briefly for the left pane to fully render ───────────────────────
+  await sleep(1500);
 
-  if (!question) {
+  // ── Read full question text — don't truncate, AI needs every detail ──────
+  const rawQuestion = readFullQuestionText(leftPane);
+  const testCases   = readTestCases();
+  const language    = detectLanguage();
+
+  if (!rawQuestion || rawQuestion.trim().length < 30) {
     warn('Could not read coding question text.');
     return false;
   }
 
-  log('Question preview:', question.substring(0, 100));
-  log('Language:', language, '| Test cases:', testCases.length);
-
-  let lastCode  = null;
-  let lastError = null;
-
-  for (let attempt = 1; attempt <= MAX_CODE_RETRIES; attempt++) {
-    log(`Code generation attempt ${attempt}/${MAX_CODE_RETRIES}`);
-    showToast(`🤖 Generating code… (attempt ${attempt}/${MAX_CODE_RETRIES})`);
-
-    // ── Step 1: Generate code via AI ──────────────────────────────
-    const result = await chrome.runtime.sendMessage({
-      action: 'generateCode',
-      question,
-      language,
-      testCases,
-      previousCode:  lastCode  || undefined,
-      previousError: lastError || undefined,
-    }).catch(err => ({ success: false, error: err.message }));
-
-    if (!result || !result.success) {
-      showToast('❌ AI error: ' + (result?.error || 'Unknown error'));
-      warn('AI error:', result?.error);
-      return false;
+  // ── Build an enhanced question string that includes sample I/O inline ─────
+  // This ensures the AI sees both the narrative AND the structured I/O even if
+  // readTestCases() already extracted them — redundancy helps accuracy.
+  let question = rawQuestion.trim();
+  if (testCases.length > 0) {
+    const alreadyHasSamples = /sample|example\s+input|input.*output/i.test(question);
+    if (!alreadyHasSamples) {
+      question += '\n\nSample Test Cases:\n';
+      testCases.forEach((tc, i) => {
+        question += `\nExample ${i + 1}:\nInput: ${tc.input}\nOutput: ${tc.output}\n`;
+      });
     }
-
-    lastCode = result.code;
-
-    // Guard: AI returned empty or placeholder code
-    if (!lastCode || lastCode.trim().length < 10) {
-      warn('AI returned empty code — retrying');
-      showToast('⚠️ AI returned empty code — retrying…');
-      continue;
-    }
-
-    log(`Got code (attempt ${attempt}):`, lastCode.substring(0, 200));
-
-    // ── Step 2: Paste code into editor ────────────────────────────
-    showToast('📋 Pasting code into editor…');
-    const pasted = await pasteCodeIntoEditor(lastCode);
-    if (!pasted) {
-      showToast('⚠️ Could not find code editor — will retry');
-      warn('pasteCodeIntoEditor returned false');
-      await sleep(2000);
-      continue; // retry paste on next attempt
-    }
-
-    // Give the editor time to fully register the new content
-    await sleep(1500);
-
-    // ── Step 3: Snapshot the output panel BEFORE clicking compile ─
-    //    This is the key fix: we ignore any text that was already there.
-    const outputBefore = getOutputPanelText();
-    log('Output panel BEFORE compile:', outputBefore.substring(0, 80) || '(empty)');
-
-    // ── Step 4: Click Compile / Run ───────────────────────────────
-    const compiled = clickCompileButton();
-    if (!compiled) {
-      showToast('⚠️ Compile button not found');
-      warn('Compile button not found — cannot verify result');
-      // If we couldn't find compile, try submitting directly
-      const submitCodeBtn = Array.from(document.querySelectorAll('button')).find(btn =>
-        btn.innerText && (btn.innerText.trim() === 'Submit Code' || btn.innerText.trim() === 'Submit')
-      );
-      if (submitCodeBtn && submitCodeBtn.offsetParent !== null) {
-        submitCodeBtn.click();
-        await sleep(2000);
-        return true; // best-effort
-      }
-      return false;
-    }
-
-    showToast('⏳ Waiting for test results…');
-    log('Compile clicked. Waiting for output to change from before state.');
-
-    // ── Step 5: Wait for output panel to CHANGE (not just exist) ──
-    const compResult = await waitForCompileResult(25000, outputBefore);
-
-    if (compResult.success) {
-      showToast(`✅ All tests passed! (attempt ${attempt})`);
-      log('Code PASSED on attempt', attempt);
-
-      // ── Step 6: Submit this coding question ───────────────────────
-      await sleep(800);
-      const submitCodeBtn = Array.from(document.querySelectorAll('button')).find(btn =>
-        btn.innerText && (
-          btn.innerText.trim() === 'Submit Code' ||
-          btn.innerText.trim() === 'Submit'
-        )
-      );
-      if (submitCodeBtn && submitCodeBtn.offsetParent !== null) {
-        log('Clicking Submit Code…');
-        submitCodeBtn.click();
-        // ✅ Wait for page to transition after submit — prevents re-entering same question
-        await sleep(3500);
-      }
-      // ✅ Return true immediately — DO NOT attempt more retries
-      return true;
-    }
-
-    // Failed — store error and loop back to AI for a fix
-    lastError = compResult.error;
-    warn(`Attempt ${attempt} FAILED. Error:`, lastError?.substring(0, 200));
-    showToast(`❌ Attempt ${attempt} failed — asking AI to fix…`);
-    await sleep(1500);
   }
 
-  showToast(`❌ Failed after ${MAX_CODE_RETRIES} attempts. Submitting best attempt.`);
-  warn('All retry attempts exhausted.');
+  log('Question preview:', question.substring(0, 200));
+  log('Language:', language, '| Test cases found:', testCases.length);
 
-  // Submit the last attempt anyway so the question is at least "attempted"
+  showToast(`🤖 Generating ${language} solution with AI…`);
+
+  // ── Step 1: Generate code via AI (single attempt, best-quality prompt) ───
+  const result = await chrome.runtime.sendMessage({
+    action: 'generateCode',
+    question,
+    language,
+    testCases,
+  }).catch(err => ({ success: false, error: err.message }));
+
+  if (!result || !result.success) {
+    showToast('❌ AI error: ' + (result?.error || 'Unknown error'));
+    warn('AI error:', result?.error);
+    return false;
+  }
+
+  const code = result.code;
+
+  // Guard: AI returned empty or placeholder code
+  if (!code || code.trim().length < 10) {
+    warn('AI returned empty/too-short code.');
+    showToast('⚠️ AI returned empty code — skipping.');
+    return false;
+  }
+
+  log('Got code:', code.substring(0, 300));
+
+  // ── Step 2: Paste code into editor ──────────────────────────────────────
+  showToast('📋 Pasting code into editor…');
+  const pasted = await pasteCodeIntoEditor(code);
+  if (!pasted) {
+    showToast('⚠️ Could not find code editor.');
+    warn('pasteCodeIntoEditor returned false');
+    // Try submitting directly as last resort
+    const submitCodeBtn = Array.from(document.querySelectorAll('button')).find(btn =>
+      btn.innerText && (btn.innerText.trim() === 'Submit Code' || btn.innerText.trim() === 'Submit')
+    );
+    if (submitCodeBtn && submitCodeBtn.offsetParent !== null) {
+      submitCodeBtn.click();
+      await sleep(2000);
+      return true;
+    }
+    return false;
+  }
+
+  // Give the editor time to fully register the new content
+  await sleep(1500);
+
+  // ── Step 3: Snapshot the output panel BEFORE clicking compile ───────────
+  const outputBefore = getOutputPanelText();
+  log('Output panel BEFORE compile:', outputBefore.substring(0, 80) || '(empty)');
+
+  // ── Step 4: Click Compile / Run ─────────────────────────────────────────
+  const compiled = clickCompileButton();
+  if (!compiled) {
+    showToast('⚠️ Compile button not found');
+    warn('Compile button not found — submitting directly');
+    const submitCodeBtn = Array.from(document.querySelectorAll('button')).find(btn =>
+      btn.innerText && (btn.innerText.trim() === 'Submit Code' || btn.innerText.trim() === 'Submit')
+    );
+    if (submitCodeBtn && submitCodeBtn.offsetParent !== null) {
+      submitCodeBtn.click();
+      await sleep(2000);
+      return true;
+    }
+    return false;
+  }
+
+  showToast('⏳ Running test cases…');
+  log('Compile clicked. Waiting for output…');
+
+  // ── Step 5: Wait for compile/run result ─────────────────────────────────
+  const compResult = await waitForCompileResult(45000, outputBefore);
+
+  if (compResult.success) {
+    showToast('✅ All test cases passed!');
+    log('Code PASSED ✅');
+
+    // ── Step 6: Submit the coding question ──────────────────────────────
+    await sleep(800);
+    const submitCodeBtn = Array.from(document.querySelectorAll('button')).find(btn =>
+      btn.innerText && (
+        btn.innerText.trim() === 'Submit Code' ||
+        btn.innerText.trim() === 'Submit'
+      )
+    );
+    if (submitCodeBtn && submitCodeBtn.offsetParent !== null) {
+      log('Clicking Submit Code…');
+      submitCodeBtn.click();
+      await sleep(3500);
+    }
+    return true;
+  }
+
+  // Test failed — log and submit best attempt anyway
+  warn('Code failed test cases:', compResult.error?.substring(0, 200));
+  showToast('⚠️ Test cases did not pass — submitting best attempt.');
+  await sleep(800);
+
   const submitCodeBtn = Array.from(document.querySelectorAll('button')).find(btn =>
     btn.innerText && (btn.innerText.trim() === 'Submit Code' || btn.innerText.trim() === 'Submit')
   );
@@ -1161,6 +1170,57 @@ async function askGemini(prompt) {
   if (result && result.success) return result.answer;
   warn('askGemini error:', result?.error);
   return null;
+}
+
+// =================================================================
+//  READ FULL QUESTION TEXT  (for single-attempt AI solving)
+//  Collects every visible detail: problem body, constraints, I/O format,
+//  sample cases — NO truncation so the AI sees the full specification.
+// =================================================================
+function readFullQuestionText(leftPane) {
+  // Priority 1: use leftPane element if supplied (most reliable)
+  if (leftPane) {
+    const text = leftPane.innerText?.trim();
+    if (text && text.length > 30) return text;
+  }
+
+  // Priority 2: dedicated problem-statement selectors
+  const selectors = [
+    'content-left',
+    '.problem-statement', '.problem-description', '.question-description',
+    '.coding-question-body', '.coding-problem', '.question-body', '.statement-body',
+    '[class*="problem-statement"]', '[class*="question-description"]',
+    '[class*="problem-desc"]', '[class*="coding-question"]',
+    '[class*="task-description"]', '[class*="question-text"]',
+    '#problem-description', '#question-body', '#problem-statement',
+    '.statement', '.task-description',
+    '[data-testid="problem-statement"]',
+    'testtaking-playground',
+  ];
+
+  for (const sel of selectors) {
+    const el = document.querySelector(sel);
+    if (el) {
+      const text = el.innerText?.trim();
+      if (text && text.length > 30) return text;
+    }
+  }
+
+  // Priority 3: largest block that looks like a coding problem
+  const blocks = [...document.querySelectorAll('div, section, article')]
+    .filter(el => {
+      const t = (el.innerText || '').trim();
+      return t.length > 80 && t.length < 50000 &&
+             !el.querySelector('input[type="text"], button, select') &&
+             getComputedStyle(el).display !== 'none';
+    })
+    .sort((a, b) => b.innerText.length - a.innerText.length);
+
+  for (const block of blocks) {
+    const t = block.innerText.trim();
+    if (/input|output|example|constraint|return|function/i.test(t)) return t;
+  }
+  return blocks[0]?.innerText.trim() ?? '';
 }
 
 // =================================================================
