@@ -564,33 +564,129 @@ async function handleTestAutomation(doMCQ, doCoding) {
       log('MCQ question detected. Asking AI…');
       showToast('📝 Solving MCQ with AI…');
 
-      const prompt =
-        `You are answering a multiple-choice question on an exam.\n` +
-        `Here is the full question text including all options:\n\n${mainContext}\n\n` +
-        `Reply with ONLY the exact text of the correct option. No explanation. No A/B/C/D prefix unless the option itself is just a letter.`;
+      // ── Step 1: Extract clean question + options from DOM ──────────────────────
+      const mcqData = readMCQData(playground);
+      log('MCQ question:', mcqData.question.substring(0, 120));
+      log('MCQ options:', mcqData.options);
 
-      const answer = await askGemini(prompt);
-      log('AI answer:', answer);
-
-      if (answer) {
-        let clicked = false;
-        for (const el of Array.from(document.querySelectorAll('*'))) {
-          if (el.innerText && el.innerText.trim().includes(answer.trim()) && el.children.length === 0) {
-            el.click();
-            if (el.parentElement) el.parentElement.click();
-            clicked = true;
-            break;
-          }
-        }
-        if (!clicked) {
-          log('Could not match answer text exactly — clicking first option as fallback');
-          radioBtns[0]?.click();
-        }
-      } else {
-        radioBtns[0]?.click();
+      // readMCQData may return fewer options if DOM detection is partial —
+      // we still attempt to answer as long as we have a question.
+      // If options array is empty we fall back to raw mainContext for the prompt.
+      if (!mcqData.question && mcqData.options.length === 0) {
+        warn('readMCQData: completely empty — falling back to mainContext as question');
+        mcqData.question = mainContext.substring(0, 1500);
       }
 
-      await sleep(2000);
+      // ── Step 2: Ask AI with a clean, structured prompt ────────────────────────
+      const optionsList = mcqData.options
+        .map((opt, i) => `Option ${i + 1}: ${opt}`)
+        .join('\n');
+
+      const mcqPrompt =
+        `You are an expert answering a multiple-choice exam question. Read carefully and select the CORRECT answer.\n\n` +
+        `QUESTION:\n${mcqData.question}\n\n` +
+        `OPTIONS:\n${optionsList}\n\n` +
+        `INSTRUCTIONS:\n` +
+        `- Analyze the question and all options carefully.\n` +
+        `- Reply with ONLY the option NUMBER (e.g. 1, 2, 3, or 4). Nothing else.\n` +
+        `- Do NOT explain. Do NOT repeat the option text. Just the number.`;
+
+      const aiAnswer = await askGemini(mcqPrompt);
+      log('AI raw answer:', aiAnswer);
+
+      // ── Step 3: Parse the option number from AI response ─────────────────────
+      let chosenIndex = -1;
+      if (aiAnswer) {
+        // Clean markdown bold/italics and newlines
+        const ans = aiAnswer.replace(/\*/g, '').trim();
+
+        // Find numbers in the text. Look for strong signals like "Option 2" or "answer is 2",
+        // or just a standalone number if the response is short.
+        const numMatch = ans.match(/(?:^|\boption\s*|\banswer(?: is|:)?\s*)(\d+)/i) || 
+                         ans.match(/^\(?([A-Ea-e])\)?[.:\s]/i) ||
+                         (ans.length < 10 ? ans.match(/(\d+)/) : null);
+
+        if (numMatch) {
+          if (numMatch[1]) {
+            // Numeric answer
+            const n = parseInt(numMatch[1], 10);
+            if (n >= 1 && n <= Math.max(mcqData.options.length, 10)) chosenIndex = n - 1;
+          } else if (numMatch[2]) {
+            // Letter answer A/B/C/D/E
+            chosenIndex = 'abcde'.indexOf(numMatch[2].toLowerCase());
+          }
+        }
+
+        // Pattern B: AI wrote the answer text — fuzzy match against options
+        if (chosenIndex === -1 && mcqData.options.length > 0) {
+          const cleaned = ans.toLowerCase().replace(/[^a-z0-9\s]/g, ' ');
+          let bestScore = 0;
+          mcqData.options.forEach((opt, i) => {
+            if (opt.includes('text hidden')) return;
+            const optLower = opt.toLowerCase().replace(/[^a-z0-9\s]/g, ' ');
+            const words = cleaned.split(/\s+/).filter(w => w.length > 2);
+            const hits  = words.filter(w => optLower.includes(w)).length;
+            const score = words.length > 0 ? hits / words.length : 0;
+            if (score > bestScore) { bestScore = score; chosenIndex = i; }
+          });
+          if (bestScore < 0.3) chosenIndex = -1; // not confident enough
+          if (chosenIndex >= 0) log(`Fuzzy matched option ${chosenIndex + 1} (score=${bestScore.toFixed(2)})`);
+        }
+      }
+
+      // ── Step 4: Click the correct option element ────────────────────────────
+      if (chosenIndex >= 0 && chosenIndex < mcqData.clickTargets.length) {
+        log(`Clicking option ${chosenIndex + 1}: "${mcqData.options[chosenIndex]}"`);
+        showToast(`✔️ Selecting option ${chosenIndex + 1}`);
+        const target = mcqData.clickTargets[chosenIndex];
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        await sleep(400);
+        target.click();
+        
+        // Ensure radio inputs are checked if we clicked a wrapper
+        if (target.tagName !== 'INPUT') {
+          const innerRadio = target.querySelector('input[type="radio"]');
+          if (innerRadio) innerRadio.click();
+        }
+        
+        // Also click parent container — many Examly wrappers need this
+        const parent = target.parentElement;
+        if (parent && parent !== document.body && parent.tagName !== 'BODY') {
+          parent.click();
+        }
+      } else {
+        // chosenIndex is -1 OR out of bounds — try a last-resort text search
+        // inside the actual clickTarget elements using the AI's raw answer text
+        let lastResortClicked = false;
+        if (aiAnswer && mcqData.clickTargets.length > 0) {
+          const needle = aiAnswer.replace(/\*/g, '').trim().toLowerCase().substring(0, 80);
+          for (let ci = 0; ci < mcqData.clickTargets.length; ci++) {
+            const elText = (mcqData.clickTargets[ci].innerText || '').toLowerCase();
+            if (needle.length > 3 && elText.includes(needle.substring(0, Math.min(needle.length, 20)))) {
+              log(`Last-resort text match at option ${ci + 1}`);
+              mcqData.clickTargets[ci].click();
+              lastResortClicked = true;
+              break;
+            }
+          }
+        }
+        
+        // Absolute last resort: if we know there are radio buttons and we failed to answer, 
+        // DO NOT skip. Ask AI the raw text question and pick option 1 as a fallback so we don't freeze/skip.
+        if (!lastResortClicked) {
+          warn('AI gave no usable answer. Falling back to option 1 to avoid skipping.');
+          showToast('⚠️ Could not parse AI answer — clicking Option 1 as fallback');
+          if (mcqData.clickTargets[0]) {
+             mcqData.clickTargets[0].click();
+             const innerRadio = mcqData.clickTargets[0].querySelector('input[type="radio"]');
+             if (innerRadio) innerRadio.click();
+          } else {
+             radioBtns[0]?.click();
+          }
+        }
+      }
+
+      await sleep(1500);
 
       const unattempted = document.querySelectorAll('[aria-labelledby="not-attempted"]');
       if (unattempted.length > 0) {
@@ -903,7 +999,7 @@ async function solveCodingQuestion(leftPane, submitBtn) {
   }
 
   // Give the editor time to fully register the new content
-  await sleep(1500);
+  await sleep(500);
 
   // ── Step 3: Snapshot the output panel BEFORE clicking compile ───────────
   const outputBefore = getOutputPanelText();
@@ -929,14 +1025,14 @@ async function solveCodingQuestion(leftPane, submitBtn) {
   log('Compile clicked. Waiting for output…');
 
   // ── Step 5: Wait for compile/run result ─────────────────────────────────
-  const compResult = await waitForCompileResult(45000, outputBefore);
+  const compResult = await waitForCompileResult(20000, outputBefore);
 
   if (compResult.success) {
     showToast('✅ All test cases passed!');
     log('Code PASSED ✅');
 
     // ── Step 6: Submit the coding question ──────────────────────────────
-    await sleep(800);
+    await sleep(200);
     const submitCodeBtn = Array.from(document.querySelectorAll('button')).find(btn =>
       btn.innerText && (
         btn.innerText.trim() === 'Submit Code' ||
@@ -954,7 +1050,7 @@ async function solveCodingQuestion(leftPane, submitBtn) {
   // Test failed — log and submit best attempt anyway
   warn('Code failed test cases:', compResult.error?.substring(0, 200));
   showToast('⚠️ Test cases did not pass — submitting best attempt.');
-  await sleep(800);
+  await sleep(200);
 
   const submitCodeBtn = Array.from(document.querySelectorAll('button')).find(btn =>
     btn.innerText && (btn.innerText.trim() === 'Submit Code' || btn.innerText.trim() === 'Submit')
@@ -1073,8 +1169,27 @@ async function waitForCompileResult(timeoutMs = 25000, outputBefore = '') {
       return { success: false, error: outputNow.slice(0, 1500) };
     }
 
-    // Output changed but matches neither — keep polling (might still be loading)
-    log('Output changed but result inconclusive, continuing to poll…');
+    // Output changed but matches neither — wait 4 more seconds to see if it resolves,
+    // then bail out rather than waiting for the full timeout.
+    log('Output changed but result inconclusive — waiting 4s for stabilisation…');
+    await sleep(4000);
+    const outputStabilised = getOutputPanelText();
+    const fracFinal = checkFractionResult(outputStabilised);
+    if (fracFinal === 'success') {
+      log('✅ SUCCESS via late fraction check');
+      return { success: true, output: outputStabilised };
+    }
+    if (fracFinal === 'partial' || errorPats.some(p => p.test(outputStabilised))) {
+      log('❌ FAILURE via late pattern check');
+      return { success: false, error: outputStabilised.slice(0, 1500) };
+    }
+    if (successPats.some(p => p.test(outputStabilised))) {
+      log('✅ SUCCESS via late success pattern');
+      return { success: true, output: outputStabilised };
+    }
+    // Still inconclusive — treat as failure and let submit happen immediately
+    log('⚠️ Output stable but inconclusive — treating as failure and submitting now.');
+    return { success: false, error: outputStabilised.slice(0, 1500) };
   }
 
   // ── Timeout — return FAILURE so AI gets another attempt ──
@@ -1159,6 +1274,158 @@ async function clickSkipPopupIfVisible() {
     if (skipBtn) { log('Skip popup found. Clicking Skip.'); skipBtn.click(); await sleep(1000); return true; }
   }
   return false;
+}
+
+// =================================================================
+//  READ MCQ DATA
+//  Returns { question: string, options: string[], clickTargets: Element[] }
+//  5-strategy option detection — searches progressively wider scopes
+// =================================================================
+function readMCQData(playground) {
+  // Search both the playground element AND the full body — whichever gives more options
+  function findOptions(scope) {
+    if (!scope) return [];
+
+    // S1: Examly-specific class names (most reliable)
+    const s1 = Array.from(scope.querySelectorAll(
+      '.option-container, .options-container > *, ' +
+      '[class*="option-item"], [class*="answer-option"], [class*="choice-item"], ' +
+      '[class*="mcq-option"], [class*="option-wrapper"], [class*="opt-item"], ' +
+      '[class*="option-box"], [class*="answer-box"], [class*="option-card"], ' +
+      '.choice, .answer-choice, .option'
+    )).filter(el => el.offsetParent !== null && el.innerText?.trim().length > 0);
+    if (s1.length >= 2) return s1;
+
+    // S2: ARIA radio roles  
+    const s2 = Array.from(scope.querySelectorAll('[role="radio"], [role="option"], mat-radio-button, .mat-radio-button'))
+      .filter(el => el.offsetParent !== null && el.innerText?.trim().length > 0);
+    if (s2.length >= 2) return s2;
+
+    // S3: Labels associated with radio inputs
+    const radios = Array.from(scope.querySelectorAll('input[type="radio"]'))
+      .filter(el => el.offsetParent !== null);
+    if (radios.length >= 2) {
+      return radios.map(input => {
+        if (input.id) {
+          const lbl = document.querySelector(`label[for="${input.id}"]`);
+          if (lbl && lbl.innerText?.trim()) return lbl;
+        }
+        const parentLabel = input.closest('label');
+        if (parentLabel && parentLabel.innerText?.trim()) return parentLabel;
+        // Try next sibling span/div for the label text
+        let sib = input.nextElementSibling;
+        while (sib) {
+          if (sib.innerText?.trim()) return sib;
+          sib = sib.nextElementSibling;
+        }
+        return input.parentElement || input;
+      });
+    }
+
+    // S4: List items (ol/ul) that look like answer choices
+    const s4 = Array.from(scope.querySelectorAll('ul > li, ol > li'))
+      .filter(el => el.offsetParent !== null && el.innerText?.trim().length > 0
+               && el.innerText.trim().length < 500); // not a description list
+    if (s4.length >= 2 && s4.length <= 8) return s4; // MCQs rarely have >8 options
+
+    // S5: Any clickable div/span rows that contain text and look like options
+    // Look for sibling elements that share the same parent and have similar structure
+    const s5 = Array.from(scope.querySelectorAll('div, span, p'))
+      .filter(el => {
+        if (!el.offsetParent) return false;
+        const t = el.innerText?.trim();
+        if (!t || t.length < 1 || t.length > 300) return false;
+        if (el.children.length > 5) return false; // too complex
+        // Must have siblings with same tag that also have text
+        const parent = el.parentElement;
+        if (!parent) return false;
+        const siblings = Array.from(parent.children).filter(
+          s => s.tagName === el.tagName && s.innerText?.trim().length > 0
+        );
+        return siblings.length >= 2 && siblings.length <= 6;
+      });
+    // Group by parent, pick the group with 2-6 similar children
+    if (s5.length >= 2) return s5;
+
+    // S6: Hard fallback to the basic MCQ detection selectors
+    const s6 = Array.from(scope.querySelectorAll('input[type="radio"], [role="radio"]'))
+      .filter(el => el.offsetParent !== null);
+    if (s6.length >= 2) return s6;
+
+    return [];
+  }
+
+  // Try playground first, then body-wide
+  let rawTargets = playground ? findOptions(playground) : [];
+  if (rawTargets.length < 2) rawTargets = findOptions(document.body);
+
+  // Deduplicate: remove elements that are ancestors of another found element
+  const deduped = rawTargets.filter(el =>
+    !rawTargets.some(other => other !== el && el.contains(other))
+  );
+  const clickTargets = deduped.length >= 2 ? deduped : rawTargets;
+
+  // Extract and clean option texts
+  let optionTexts = clickTargets.map(el => {
+    let t = '';
+    if (el.tagName === 'INPUT') {
+      if (el.id) {
+        const lbl = document.querySelector(`label[for="${el.id}"]`);
+        if (lbl) t = lbl.innerText;
+      }
+      if (!t && el.parentElement) t = el.parentElement.innerText;
+      if (!t) {
+        let sib = el.nextElementSibling;
+        while (sib && !t) { t = sib.innerText; sib = sib.nextElementSibling; }
+      }
+    } else {
+      t = el.innerText;
+    }
+    t = (t || '').trim();
+    // Strip leading A. B. (1) 1. etc.
+    return t.replace(/^\(?[A-Ea-e1-5][.\)]\)?\s*/, '').trim();
+  });
+
+  // If text extraction completely failed, give them placeholder numbers so the array length matches
+  optionTexts = optionTexts.map((t, i) => t || `[Option ${i + 1} text hidden]`);
+
+  // ── Extract question text ─────────────────────────────────────────────────
+  const root = playground || document.body;
+  let questionText = '';
+
+  const qSelectors = [
+    '[class*="question-text"]', '[class*="question-body"]', '[class*="question-stem"]',
+    '[class*="question-content"]', '[class*="question-description"]',
+    '[class*="question-title"]', '[class*="qstn"]', '[class*="q-text"]',
+    '.question', '.stem', 'p.question',
+    // Angular component tags Examly uses
+    'question-text', 'question-content',
+  ];
+  for (const sel of qSelectors) {
+    const el = root.querySelector(sel) || document.querySelector(sel);
+    if (el && el.offsetParent !== null) {
+      const t = el.innerText?.trim();
+      if (t && t.length > 10) { questionText = t; break; }
+    }
+  }
+
+  // Fallback: from full text, take everything before the first option
+  if (!questionText) {
+    const fullText = (root.innerText || document.body.innerText || '').trim();
+    const firstOptIdx = optionTexts
+      .map(opt => opt && fullText.indexOf(opt))
+      .filter(i => typeof i === 'number' && i > 5)
+      .sort((a, b) => a - b)[0];
+    if (firstOptIdx > 10) {
+      questionText = fullText.substring(0, firstOptIdx).trim();
+    } else {
+      // Last resort: just use up to 800 chars of the page
+      questionText = fullText.replace(/[\t ]{2,}/g, ' ').substring(0, 800).trim();
+    }
+  }
+
+  log(`readMCQData: found ${clickTargets.length} option elements`);
+  return { question: questionText, options: optionTexts, clickTargets };
 }
 
 // =================================================================
